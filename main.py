@@ -91,6 +91,20 @@ def _log_label_stats(labels: np.ndarray, top_k: int = 10) -> None:
 	LOGGER.info("Top-%d label dagilimi: %s", top_k, dict(zip(top_values.tolist(), top_counts.tolist())))
 
 
+def _compute_class_weights(labels: np.ndarray, n_classes: int) -> Dict[int, float]:
+	counts = np.bincount(labels, minlength=n_classes)
+	valid_classes = np.where(counts > 0)[0]
+	if len(valid_classes) == 0:
+		raise ValueError("Sinif sayimi bos. Etiketler kontrol edilmeli.")
+
+	total = counts[valid_classes].sum()
+	weights: Dict[int, float] = {}
+	for cls in valid_classes:
+		weights[int(cls)] = float(total / (len(valid_classes) * counts[cls]))
+
+	return weights
+
+
 def main() -> None:
 	logging.basicConfig(
 		level=logging.INFO,
@@ -123,11 +137,13 @@ def main() -> None:
 
 	LOGGER.info("Train/Val/Test ornek sayilari: %d / %d / %d", len(train_labels), len(val_labels), len(test_labels))
 
+	event_vocab_size = int(dataset.metadata["categoricalVocabs"]["event_type"])
+	class_weights = _compute_class_weights(train_labels, event_vocab_size)
+	LOGGER.info("Class weight sayisi: %d", len(class_weights))
+
 	train_ds = _to_tf_dataset(train_inputs, train_labels, batch_size=32, shuffle=True)
 	val_ds = _to_tf_dataset(val_inputs, val_labels, batch_size=32, shuffle=False)
 	test_ds = _to_tf_dataset(test_inputs, test_labels, batch_size=32, shuffle=False)
-
-	event_vocab_size = int(dataset.metadata["categoricalVocabs"]["event_type"])
 
 	config = {
 		"task": "multiclass",
@@ -152,13 +168,19 @@ def main() -> None:
 		training_dataset=train_ds,
 		validation_dataset=val_ds,
 		total_epochs=15,
+		class_weight=class_weights,
 	)
 
 	trainer.load_best_weights()
 	LOGGER.info("Egitim tamamlandi. En iyi agirliklar yüklendi.")
 
 	LOGGER.info("Test degerlendirmesi basliyor...")
-	trainer.evaluate(test_ds)
+	results = trainer.evaluate(test_ds)
+	metric_names = hybrid_model.metrics_names
+	if isinstance(results, (list, tuple)):
+		LOGGER.info("Test metrikleri: %s", dict(zip(metric_names, results)))
+	else:
+		LOGGER.info("Test metrikleri: %s", results)
 
 
 if __name__ == "__main__":
